@@ -404,6 +404,17 @@ conv2d = scipy.signal.convolve
 
 
 def conv3d(x, y, mode="valid"):
+    """
+    Convolution of x (3 dimensional tensor) and y (3 dimensional tensors).
+    Optionally when x and y have only two dimensions, it automatically adds
+    one extra dimension to indicate number of batch is 1 or number of
+    filters is 1.
+
+    The result is a 4 dimensional tesnor where first dimension is batch index,
+    second dimension is filter base index and and last two dimensions are 
+    convolutions.
+
+    """
     if x.ndim==2:
         x = x.reshape(1, *x.shape)
     if y.ndim==2:
@@ -414,7 +425,22 @@ def conv3d(x, y, mode="valid"):
         for j in xrange(y.shape[0]):
             result[i, j] = scipy.signal.convolve(x[i], y[j], mode)
     return result
-        
+
+def conv4d(x, y, mode="valid"):
+    """
+    Convolution of x (4 dimensional tensor) and y (3 dimensional tensors)
+
+    The result is a 4 dimesional tensor where first dimension is batch index,
+    second dimension is filter base index and last two dimensions are 
+    convolutions.
+
+    """
+    result = numpy.zeros((x.shape[0], y.shape[0]), dtype=object)
+    for k in xrange(x.shape[0]):
+        for i in xrange(x.shape[1]):
+            for j in xrange(y.shape[0]):
+                result[k, j] += scipy.signal.convolve(x[k, i], y[j], mode)
+    return result
 
 class Convolutional(RBM):
     '''
@@ -446,38 +472,41 @@ class Convolutional(RBM):
         else:
             self.hidden_prob = self.softmax
 
-    def _pool_sigmoid(self, active):
+    def _pool_sum(self, active, scaled=False):
         '''Given activity in the hidden units, pool it into groups.'''
-        rows, cols = self.pool_shape
-        pool = numpy.zeros(active.shape, float)
-        pool = []
+        pool = numpy.empty(active.shape[:2], dtype=object)
         for m in xrange(active.shape[0]):
-            pool.append([])
             for n in xrange(active.shape[1]):
-                r, c = active[m][n].shape
-                pool[-1].append(numpy.zeros((r, c)))
-                for i in range(int(numpy.floor(float(r) / rows) + 1)):
-                    for j in range(int(numpy.floor(float(c) / cols) + 1)):
+                r, c = active[m, n].shape
+                rows, cols = self.pool_shape
+                if rows == -1:
+                    rows = r
+                if cols == -1:
+                    cols = c
+                _r = int(numpy.floor(float(r) / rows) + 1)
+                _c = int(numpy.floor(float(c) / cols) + 1)
+                if scaled:
+                    pool[m, n] = numpy.zeros((_r, _c))
+                else:
+                    pool[m, n] = numpy.zeros((r, c), dtype=numpy.float64)
+                for i in range(_r):
+                    for j in range(_c):
                         rslice = slice(i * rows, (i + 1) * rows)
                         cslice = slice(j * cols, (j + 1) * cols)               
                         mask = (rslice, cslice)
-                        pool[m][n][mask] = active[m][n][mask].sum()
-        return numpy.asarray(pool, dtype=active.dtype)
+                        s = active[m, n][mask].sum()
+                        if scaled:
+                            pool[m, n][i, j] = s                           
+                        else:
+                            pool[m, n][mask] = s
+        return pool
 
     def hidden_raw(self, visible):
         '''Given visible data, return the expected pooling unit values.'''
-        if visible.ndim==1:
-            hid_bias = self.hid_bias.reshape(1, self.num_filters)
-        elif visible.ndim==3:
-            hid_bias = self.hid_bias.reshape(1, self.num_filters, 1, 1)
+        hid_bias = self.hid_bias.reshape(1, self.num_filters)
         activation = conv3d(visible, self.weights[:, ::-1, ::-1], 'valid')\
                      + hid_bias
         return activation
-
-    def pooled_softmax(self, visible):
-        '''Given visible data, return the expected pooling unit values.'''
-        active = exp(self.hidden_raw(visible))
-        return 1. - 1. / (1. + self._pool_sigmoid(active))
 
     def pooled_max(self, visible):
         active = self.hidden_raw(visible)
@@ -489,20 +518,24 @@ class Convolutional(RBM):
     def softmax(self, visible):
         '''Given visible data, return the expected hidden unit values.'''
         active = exp(self.hidden_raw(visible))
-        return active / (1. + self._pool_sigmoid(active))
+        return active / (1. + self._pool_sum(active))
+
+    def pool_softmax(self, visible):
+        active = exp(self.hidden_raw(visible))
+        return 1. - 1./(1. + self._pool_sigmoid(active, scaled=True)) 
 
     def my_sigmoid(self, visible):
         return sigmoid(self.pooled_max(visible))
 
     def visible_expectation(self, hidden):
         '''Given hidden states, return the expected visible unit values.'''
-        activation = numpy.asarray([
-                        numpy.asarray(
-                            [conv2d(hidden[i, j], self.weights[j], 'full')
-                            for j in xrange(hidden.shape[1])]
-                        ).sum(axis=0)
-                        for i in xrange(hidden.shape[0])                        
-                     ], dtype=object) + self.vis_bias
+        activation = numpy.empty((hidden.shape[0]), dtype=object)
+        for i in xrange(hidden.shape[0]):
+            activation[i] =  numpy.asarray(
+                                [conv2d(hidden[i, j], self.weights[j], 'full')
+                                for j in xrange(hidden.shape[1])],
+                                dtype=numpy.float64
+                             ).sum(axis=0) + self.vis_bias
         return self._visible(activation)
 
     def vh2w(self, v, h):
@@ -511,6 +544,12 @@ class Convolutional(RBM):
                             for j in xrange(h.shape[1])]
                     for i in xrange(h.shape[0])
                 ])
+
+    def hidden_mean(self, h):
+        if h.dtype==object:
+            return mean(h).mean(axis=0)
+        else:
+            return h.mean(axis=-1).mean(axis=-1).mean(axis=0)
 
     def calculate_gradients(self, visible):
         '''Calculate gradients for an instance of visible data.
@@ -524,15 +563,13 @@ class Convolutional(RBM):
         v1 = self.visible_expectation(bernoulli(h0))
         h1 = self.hidden_prob(v1)
         gw = (self.vh2w(v0, h0) - self.vh2w(v1, h1)).mean(axis=0)
-        if v0.ndim==3:
-            gv = (v0 - v1).mean()
-        elif v0.ndim==1:
+        if v0.dtype==object:
             gv = mean(v0 - v1).mean()
+        else:
+            v1 = numpy.asarray(list(v1), v0.dtype)
+            gv = (v0 - v1).mean()
     
-        if h0.ndim==2:
-            gh = mean(h0 - h1).mean(axis=0)
-        elif h0.ndim==4:
-            gh = (h0 - h1).mean(axis=-1).mean(axis=-1).mean(axis=0)
+        gh = self.hidden_mean(h0 - h1)
 
         return gw, gv, gh
 
@@ -557,7 +594,7 @@ class Convolutional(RBM):
             '''
             w, v, h = self.rbm.calculate_gradients(visible)
             if self.target_sparsity is not None:
-                h -= self.target_sparsity*self.rbm.hidden_prob(visible).mean(axis=-1).mean(axis=-1).mean(0)
+                h -= self.target_sparsity*self.rbm.hidden_mean(self.rbm.hidden_prob(visible))
 
             kwargs = dict(alpha=alpha, momentum=self.momentum)
             self.grad_vis = self.rbm.apply_gradient('vis_bias', v, self.grad_vis, **kwargs)
