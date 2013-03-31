@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name='lmj.deepnets',
-    version='0.1',
+    version='0.1.1dev',
     py_modules=['rbm', "DBN"],
     install_requires=['numpy'],
 
