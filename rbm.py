@@ -520,9 +520,9 @@ class Convolutional(RBM):
         active = exp(self.hidden_raw(visible))
         return active / (1. + self._pool_sum(active))
 
-    def pool_softmax(self, visible):
+    def pooled_softmax(self, visible):
         active = exp(self.hidden_raw(visible))
-        return 1. - 1./(1. + self._pool_sigmoid(active, scaled=True)) 
+        return 1. - 1./(1. + self._pool_sum(active, scaled=True)) 
 
     def my_sigmoid(self, visible):
         return sigmoid(self.pooled_max(visible))
