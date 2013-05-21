@@ -53,8 +53,8 @@ import numpy
 import logging
 import scipy.signal
 import numpy.random as rng
-from itertools import product
-
+from itertools import product, izip, imap, cycle
+from multiprocessing import Pool
 
 def identity(eta):
     return eta
@@ -403,7 +403,7 @@ class Temporal(RBM):
 conv2d = scipy.signal.convolve
 
 
-def conv3d(x, y, mode="valid"):
+def conv3d(x, y, mode="valid", n_jobs=2):
     """
     Convolution of x (3 dimensional tensor) and y (3 dimensional tensors).
     Optionally when x and y have only two dimensions, it automatically adds
@@ -419,11 +419,25 @@ def conv3d(x, y, mode="valid"):
         x = x.reshape(1, *x.shape)
     if y.ndim==2:
         y = y.reshape(1, *y.shape)
+
+    """
     cshape = scipy.signal.convolve(x[0], y[0], mode).shape
     result = numpy.empty((x.shape[0], y.shape[0]), dtype=object)
     for i in xrange(x.shape[0]):
         for j in xrange(y.shape[0]):
             result[i, j] = scipy.signal.convolve(x[i], y[j], mode)
+    return result
+    """
+
+    pool = Pool(processes=n_jobs)
+    jj, ii = numpy.meshgrid(numpy.arange(y.shape[0]), numpy.arange(x.shape[0]))
+    params = izip(imap(lambda i: x[i], ii.ravel()),
+                  imap(lambda j: y[j], jj.ravel()),
+                  cycle([mode]))
+    convs = pool.map_async(atomic_conv, params, chunksize=10).get()
+    pool.close()
+    pool.join()
+    result = numpy.asarray(convs, dtype=object).reshape(x.shape[0], y.shape[0])
     return result
 
 def conv4d(x, y, mode="valid"):
@@ -447,7 +461,7 @@ class Convolutional(RBM):
     '''
 
     def __init__(self, num_filters, filter_shape, pool_shape, binary=True, 
-                       scale=0.001, prob="raw"):
+                       scale=0.001, prob="raw", n_jobs=2):
         '''Initialize a convolutional restricted boltzmann machine.
 
         num_filters: The number of convolution filters.
@@ -464,6 +478,7 @@ class Convolutional(RBM):
         self.weights = scale * rng.randn(num_filters, *filter_shape)
         self.vis_bias = scale * rng.randn()
         self.hid_bias = 2 * scale * rng.randn(num_filters)
+        self.n_jobs = n_jobs
 
         self._visible = binary and sigmoid or identity
         self.pool_shape = pool_shape
@@ -504,7 +519,8 @@ class Convolutional(RBM):
     def hidden_raw(self, visible):
         '''Given visible data, return the expected pooling unit values.'''
         hid_bias = self.hid_bias.reshape(1, self.num_filters)
-        activation = conv3d(visible, self.weights[:, ::-1, ::-1], 'valid')\
+        activation = conv3d(visible, self.weights[:, ::-1, ::-1], 'valid',
+                            n_jobs=self.n_jobs)\
                      + hid_bias
         return activation
 
