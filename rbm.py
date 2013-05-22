@@ -403,6 +403,13 @@ class Temporal(RBM):
 conv2d = scipy.signal.convolve
 
 
+def atomic_conv(params):
+    x, y, mode = params
+    return conv2d(x, y, mode)
+
+def atomic_mconv(params):
+    return atomic_conv(params)/params[1].size
+
 def conv3d(x, y, mode="valid", n_jobs=2):
     """
     Convolution of x (3 dimensional tensor) and y (3 dimensional tensors).
@@ -456,6 +463,34 @@ def conv4d(x, y, mode="valid"):
                 result[k, j] += scipy.signal.convolve(x[k, i], y[j], mode)
     return result
 
+def pool_sum(params):
+    active, pool_shape, scaled = params
+    r, c = active.shape
+    rows, cols = pool_shape
+    if type(rows) is float:
+        assert rows <= 1.0
+        rows = int(rows*r)
+    if type(cols) is float:
+        assert cols <= 1.0
+        cols = int(cols*c)
+    _r = int(numpy.ceil(float(r)/rows))
+    _c = int(numpy.ceil(float(c)/cols))
+    if scaled:
+        pool = numpy.zeros((_r, _c), dtype=numpy.float64)
+    else:
+        pool = numpy.zeros((r, c), dtype=numpy.float64)
+    for i in xrange(_r):
+        for j in xrange(_c):
+            rslice = slice(i * rows, (i + 1) * rows)
+            cslice = slice(j * cols, (j + 1) * cols)
+            mask = (rslice, cslice)
+            s = active[mask].sum()
+            if scaled:
+                pool[i, j] = s
+            else:
+                pool[mask] = s
+    return pool
+
 class Convolutional(RBM):
     '''
     '''
@@ -489,33 +524,18 @@ class Convolutional(RBM):
 
     def _pool_sum(self, active, scaled=False):
         '''Given activity in the hidden units, pool it into groups.'''
-        pool = numpy.empty(active.shape[:2], dtype=object)
-        for m in xrange(active.shape[0]):
-            for n in xrange(active.shape[1]):
-                r, c = active[m, n].shape
-                rows, cols = self.pool_shape
-                if rows == -1:
-                    rows = r
-                if cols == -1:
-                    cols = c
-                _r = int(numpy.floor(float(r) / rows) + 1)
-                _c = int(numpy.floor(float(c) / cols) + 1)
-                if scaled:
-                    pool[m, n] = numpy.zeros((_r, _c))
-                else:
-                    pool[m, n] = numpy.zeros((r, c), dtype=numpy.float64)
-                for i in range(_r):
-                    for j in range(_c):
-                        rslice = slice(i * rows, (i + 1) * rows)
-                        cslice = slice(j * cols, (j + 1) * cols)               
-                        mask = (rslice, cslice)
-                        s = active[m, n][mask].sum()
-                        if scaled:
-                            pool[m, n][i, j] = s                           
-                        else:
-                            pool[m, n][mask] = s
-        return pool
-
+        pool = Pool(processes=self.n_jobs)
+        nn, mm = numpy.meshgrid(xrange(active.shape[1]), xrange(active.shape[0]))
+        params = izip(imap(lambda t: active[t], izip(mm.ravel(), nn.ravel())),
+                      cycle([self.pool_shape]),
+                      cycle([scaled]))
+        result = pool.map_async(pool_sum, params, chunksize=20).get()
+        pool.close()
+        pool.join()
+        result = numpy.asarray(result, dtype=object)\
+                    .reshape(active.shape[0], active.shape[1])
+        return result
+        
     def hidden_raw(self, visible):
         '''Given visible data, return the expected pooling unit values.'''
         hid_bias = self.hid_bias.reshape(1, self.num_filters)
@@ -555,11 +575,23 @@ class Convolutional(RBM):
         return self._visible(activation)
 
     def vh2w(self, v, h):
+        pool = Pool(processes=self.n_jobs)
+        jj, ii = numpy.meshgrid(xrange(h.shape[1]), xrange(h.shape[0]))
+        params = izip(imap(lambda i: v[i], ii.ravel()),
+                      imap(lambda t: h[t][::-1, ::-1],
+                           izip(ii.ravel(), jj.ravel())),
+                      cycle(["valid"]))
+        w = pool.map_async(atomic_mconv, params, chunksize=20).get()
+        pool.close()
+        pool.join()
+        return numpy.asarray(w).reshape(h.shape[0], h.shape[1], *w[0].shape)
+
+    def vh2w_single(self, v, h):
         return numpy.asarray([
                         [conv2d(v[i], h[i, j][::-1, ::-1], "valid")/h[i, j].size\
                             for j in xrange(h.shape[1])]
                     for i in xrange(h.shape[0])
-                ])
+                ])        
 
     def hidden_mean(self, h):
         if h.dtype==object:
