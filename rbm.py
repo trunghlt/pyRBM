@@ -55,6 +55,8 @@ import scipy.signal
 import numpy.random as rng
 from itertools import product, izip, imap, cycle
 from multiprocessing import Pool
+from operator import itemgetter
+from itertools import product
 
 def identity(eta):
     return eta
@@ -93,6 +95,13 @@ def exp(x):
 
 def sigmoid(eta):
     return 1. / (1. + exp(-eta))
+
+def objarray(data, maxdim=None, dtype=object):
+    o = numpy.asarray(data, dtype=object)
+    r = numpy.empty(o.shape[:maxdim], dtype=dtype)
+    for p in product(*[xrange(l) for l in r.shape]):
+        r[p] = numpy.asarray(o[p], dtype=numpy.float64)
+    return r
 
 class RBM(object):
     '''A restricted boltzmann machine is a type of neural network auto-encoder.
@@ -422,32 +431,18 @@ def conv3d(x, y, mode="valid", n_jobs=2):
     convolutions.
 
     """
-    if x.ndim==2:
-        x = x.reshape(1, *x.shape)
-    if y.ndim==2:
-        y = y.reshape(1, *y.shape)
-
-    """
-    cshape = scipy.signal.convolve(x[0], y[0], mode).shape
-    result = numpy.empty((x.shape[0], y.shape[0]), dtype=object)
-    for i in xrange(x.shape[0]):
-        for j in xrange(y.shape[0]):
-            result[i, j] = scipy.signal.convolve(x[i], y[j], mode)
-    return result
-    """
-
     pool = Pool(processes=n_jobs)
     jj, ii = numpy.meshgrid(numpy.arange(y.shape[0]), numpy.arange(x.shape[0]))
-    params = izip(imap(lambda i: x[i], ii.ravel()),
-                  imap(lambda j: y[j], jj.ravel()),
+    params = izip(imap(x.__getitem__, ii.ravel()),
+                  imap(y.__getitem__, jj.ravel()),
                   cycle([mode]))
-    convs = pool.map_async(atomic_conv, params, chunksize=10).get()
+    convs = pool.map_async(atomic_conv, params).get()
     pool.close()
     pool.join()
     result = numpy.asarray(convs, dtype=object).reshape(x.shape[0], y.shape[0])
     return result
 
-def conv4d(x, y, mode="valid"):
+def conv4d(x, y, mode="valid", n_jobs=2):
     """
     Convolution of x (4 dimensional tensor) and y (3 dimensional tensors)
 
@@ -456,11 +451,20 @@ def conv4d(x, y, mode="valid"):
     convolutions.
 
     """
-    result = numpy.zeros((x.shape[0], y.shape[0]), dtype=object)
-    for k in xrange(x.shape[0]):
-        for i in xrange(x.shape[1]):
-            for j in xrange(y.shape[0]):
-                result[k, j] += scipy.signal.convolve(x[k, i], y[j], mode)
+    assert x.shape[1]==y.shape[0]
+    pool = Pool(processes=n_jobs)
+    ii, jj = zip(*[((k, i), (i, j))\
+                   for k in xrange(x.shape[0])\
+                   for i in xrange(x.shape[1])\
+                   for j in xrange(y.shape[1])])
+    params = izip(imap(x.__getitem__, ii),
+                  imap(y.__getitem__, jj),
+                  cycle([mode]))
+    convs = pool.map_async(atomic_conv, params).get()
+    pool.close()
+    pool.join()
+    result = objarray(convs, dtype=object, maxdim=1)
+    result = result.reshape(x.shape[0], x.shape[1], y.shape[1])
     return result
 
 def pool_sum(params):
@@ -469,10 +473,10 @@ def pool_sum(params):
     rows, cols = pool_shape
     if type(rows) is float:
         assert rows <= 1.0
-        rows = int(rows*r)
+        rows = int(numpy.ceil(rows*r))
     if type(cols) is float:
         assert cols <= 1.0
-        cols = int(cols*c)
+        cols = int(numpy.ceil(cols*c))
     _r = int(numpy.ceil(float(r)/rows))
     _c = int(numpy.ceil(float(c)/cols))
     if scaled:
@@ -495,8 +499,9 @@ class Convolutional(RBM):
     '''
     '''
 
-    def __init__(self, num_filters, filter_shape, pool_shape, binary=True, 
-                       scale=0.001, prob="raw", n_jobs=2):
+    def __init__(self, inp_layers, num_filters, filter_shape, pool_shape,
+                       binary=True,  scale=0.001, hidden_prob="softmax", 
+                       n_jobs=2):
         '''Initialize a convolutional restricted boltzmann machine.
 
         num_filters: The number of convolution filters.
@@ -509,15 +514,17 @@ class Convolutional(RBM):
             from convolution is applied, if "sigmoid" then a sigmoid of 
             result from convolution is applied.
         '''
+        self.inp_layers = inp_layers
         self.num_filters = num_filters
-        self.weights = scale * rng.randn(num_filters, *filter_shape)
+        self.filter_shape = filter_shape
+        self.weights = scale * rng.randn(inp_layers, num_filters, *filter_shape)
         self.vis_bias = scale * rng.randn()
         self.hid_bias = 2 * scale * rng.randn(num_filters)
         self.n_jobs = n_jobs
 
         self._visible = binary and sigmoid or identity
         self.pool_shape = pool_shape
-        if prob=="max":
+        if hidden_prob == "sigmoid":
             self.hidden_prob = self.my_sigmoid
         else:
             self.hidden_prob = self.softmax
@@ -525,11 +532,10 @@ class Convolutional(RBM):
     def _pool_sum(self, active, scaled=False):
         '''Given activity in the hidden units, pool it into groups.'''
         pool = Pool(processes=self.n_jobs)
-        nn, mm = numpy.meshgrid(xrange(active.shape[1]), xrange(active.shape[0]))
-        params = izip(imap(lambda t: active[t], izip(mm.ravel(), nn.ravel())),
+        params = izip(active.ravel(),
                       cycle([self.pool_shape]),
                       cycle([scaled]))
-        result = pool.map_async(pool_sum, params, chunksize=20).get()
+        result = pool.map_async(pool_sum, params).get()
         pool.close()
         pool.join()
         result = numpy.asarray(result, dtype=object)\
@@ -538,17 +544,10 @@ class Convolutional(RBM):
         
     def hidden_raw(self, visible):
         '''Given visible data, return the expected pooling unit values.'''
-        hid_bias = self.hid_bias.reshape(1, self.num_filters)
-        activation = conv3d(visible, self.weights[:, ::-1, ::-1], 'valid',
-                            n_jobs=self.n_jobs)\
-                     + hid_bias
-        return activation
-
-    def pooled_max(self, visible):
-        active = self.hidden_raw(visible)
-        #max_active = active.max(axis=2)
-        #n, k, h, w = active.shape
-        #return numpy.random.rand(*active.shape)*max_active.reshape(n, k, 1, w)
+        #hid_bias = self.hid_bias.reshape(1, self.num_filters)
+        active = conv4d(visible, self.weights[:, :, ::-1, ::-1], 'valid',
+                        n_jobs=self.n_jobs)
+        active = active.sum(axis=1) + self.hid_bias
         return active
 
     def softmax(self, visible):
@@ -556,42 +555,27 @@ class Convolutional(RBM):
         active = exp(self.hidden_raw(visible))
         return active / (1. + self._pool_sum(active))
 
+    def my_sigmoid(self, visible):
+        return sigmoid(self.hidden_raw(visible))
+
     def pooled_softmax(self, visible):
         active = exp(self.hidden_raw(visible))
         return 1. - 1./(1. + self._pool_sum(active, scaled=True)) 
 
-    def my_sigmoid(self, visible):
-        return sigmoid(self.pooled_max(visible))
-
     def visible_expectation(self, hidden):
         '''Given hidden states, return the expected visible unit values.'''
-        activation = numpy.empty((hidden.shape[0]), dtype=object)
-        for i in xrange(hidden.shape[0]):
-            activation[i] =  numpy.asarray(
-                                [conv2d(hidden[i, j], self.weights[j], 'full')
-                                for j in xrange(hidden.shape[1])],
-                                dtype=numpy.float64
-                             ).sum(axis=0) + self.vis_bias
-        return self._visible(activation)
+        result = conv4d(hidden, numpy.transpose(self.weights, [1, 0, 2, 3]),
+                        'full').sum(axis=1) + self.vis_bias
+        return self._visible(result)
 
     def vh2w(self, v, h):
-        pool = Pool(processes=self.n_jobs)
-        jj, ii = numpy.meshgrid(xrange(h.shape[1]), xrange(h.shape[0]))
-        params = izip(imap(lambda i: v[i], ii.ravel()),
-                      imap(lambda t: h[t][::-1, ::-1],
-                           izip(ii.ravel(), jj.ravel())),
-                      cycle(["valid"]))
-        w = pool.map_async(atomic_mconv, params, chunksize=20).get()
-        pool.close()
-        pool.join()
-        return numpy.asarray(w).reshape(h.shape[0], h.shape[1], *w[0].shape)
-
-    def vh2w_single(self, v, h):
-        return numpy.asarray([
-                        [conv2d(v[i], h[i, j][::-1, ::-1], "valid")/h[i, j].size\
-                            for j in xrange(h.shape[1])]
-                    for i in xrange(h.shape[0])
-                ])        
+        ih = numpy.array([l[::-1, ::-1]/l.size for l in h.ravel()], dtype=object)
+        ih = objarray(ih, maxdim=1).reshape(h.shape)
+        w = conv4d(v.T, ih).mean(axis=1)
+        w = numpy.asarray(list(w.ravel())).reshape(self.inp_layers, 
+                                                   self.num_filters,
+                                                   *self.filter_shape)
+        return w
 
     def hidden_mean(self, h):
         if h.dtype==object:
@@ -610,13 +594,8 @@ class Convolutional(RBM):
         h0 = self.hidden_prob(v0)
         v1 = self.visible_expectation(bernoulli(h0))
         h1 = self.hidden_prob(v1)
-        gw = (self.vh2w(v0, h0) - self.vh2w(v1, h1)).mean(axis=0)
-        if v0.dtype==object:
-            gv = mean(v0 - v1).mean()
-        else:
-            v1 = numpy.asarray(list(v1), v0.dtype)
-            gv = (v0 - v1).mean()
-    
+        gw = (self.vh2w(v0, h0) - self.vh2w(v1, h1))
+        gv = mean(v0 - v1).mean()
         gh = self.hidden_mean(h0 - h1)
 
         return gw, gv, gh
