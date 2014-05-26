@@ -659,7 +659,7 @@ class Convolutional(RBM):
             '''
             self.rbm = rbm
             self.momentum = momentum
-            selfj.target_sparsity = target_sparsity
+            self.target_sparsity = target_sparsity
 
             self.grad_weights = numpy.zeros(rbm.weights.shape, float)
             self.grad_vis = 0.
