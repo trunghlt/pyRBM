@@ -427,7 +427,7 @@ def atomic_conv(params):
 def atomic_mconv(params):
     return atomic_conv(params)/params[1].size
 
-ref conv3d(x, y, mode="valid", n_jobs=2):
+def conv3d(x, y, mode="valid", n_jobs=2):
     """
     Convolution of x (3 dimensional tensor) and y (3 dimensional tensors).
     Optionally when x and y have only two dimensions, it automatically adds
