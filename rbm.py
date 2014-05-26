@@ -631,16 +631,12 @@ class Convolutional(RBM):
         v0 = visible
         h0 = self.hidden_prob(v0)
 
-        if self.persistant:
-            v1 = self.visible_expectation(bernoulli(h0))
-            h1 = self.hidden_prob(v1)
-        else:
-            assert idx is not None
-            assert self.V_ is not None, "You haven't initialised the model yet"
-            h_ = self.hidden_prob(self.V_[idx])
-            v1 = self.visible_expectation(bernoulli(h_))
-            h1 = self.hidden_prob(v1)
-            self.V_[idx] = v1
+        assert idx is not None
+        assert self.V_ is not None, "You haven't initialised the model yet"
+        h_ = self.hidden_prob(self.V_[idx])
+        v1 = self.visible_expectation(bernoulli(h_))
+        h1 = self.hidden_prob(v1)
+        self.V_[idx] = v1
 
         gw = (self.vh2w(v0, h0) - self.vh2w(v1, h1))
         gv = mean(v0 - v1).mean()
@@ -652,8 +648,7 @@ class Convolutional(RBM):
         '''
         '''
 
-        def __init__(self, rbm, momentum, target_sparsity=None,
-                           persistant=False):
+        def __init__(self, rbm, momentum, target_sparsity=None):
             '''
                 
             '''
@@ -665,7 +660,6 @@ class Convolutional(RBM):
             self.grad_vis = 0.
             self.grad_hid = numpy.zeros(rbm.hid_bias.shape, float)
 
-            self.persistant = persistant
             self.V_ = None
             
         def init(self, V, iterations=100):
@@ -673,7 +667,6 @@ class Convolutional(RBM):
                 Used only when ``peristant`` is True.
                 
             """
-            assert self.persistant
             V_ = V
             for i in xrange(iterations):
                 H = self.hidden_prob(V_)
