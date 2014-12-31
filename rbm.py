@@ -61,7 +61,7 @@ from itertools import product
 
 def identity(eta):
     return eta
-    
+
 def gaussian(eta, mean, std):
     return eta + std*numpy.random.randn(*eta.shape) + mean
 
@@ -111,7 +111,7 @@ class RBM(object):
     '''A restricted boltzmann machine is a type of neural network auto-encoder.
     '''
 
-    def __init__(self, num_visible, num_hidden, visible_mode='binary', 
+    def __init__(self, num_visible, num_hidden, visible_mode='binary',
                  scale=0.001):
         '''Initialize a restricted boltzmann machine.
 
@@ -128,7 +128,7 @@ class RBM(object):
             self._visible == sigmoid
         else:
             self._visible = identity
-                            
+
     def hidden_expectation(self, visible, bias=0.):
         '''Given visible data, return the expected hidden unit values.'''
         return sigmoid(numpy.dot(visible, self.weights) + self.hid_bias + bias)
@@ -435,7 +435,7 @@ def conv3d(x, y, mode="valid", n_jobs=2):
     filters is 1.
 
     The result is a 4 dimensional tesnor where first dimension is batch index,
-    second dimension is filter base index and and last two dimensions are 
+    second dimension is filter base index and and last two dimensions are
     convolutions.
 
     """
@@ -455,7 +455,7 @@ def conv4d(x, y, mode="valid", n_jobs=2, processes=None):
     Convolution of x (4 dimensional tensor) and y (3 dimensional tensors)
 
     The result is a 4 dimesional tensor where first dimension is batch index,
-    second dimension is filter base index and last two dimensions are 
+    second dimension is filter base index and last two dimensions are
     convolutions.
 
     """
@@ -520,7 +520,7 @@ class Convolutional(RBM):
         return f
 
     def __init__(self, inp_layers, num_filters, filter_shape, pool_shape,
-                       visible_mode="binary", scale=0.001, 
+                       visible_mode="binary", scale=0.001,
                        hidden_prob="softmax", n_jobs=2,
                        noise_mean=0, noise_std=1):
         '''Initialize a convolutional restricted boltzmann machine.
@@ -533,8 +533,8 @@ class Convolutional(RBM):
         binary: True if the visible units are binary, False if the visible units
           are normally distributed.
         scale: Scale initial values by this parameter.
-        @param pro: probability pooling function. If "raw", then a raw result 
-            from convolution is applied, if "sigmoid" then a sigmoid of 
+        @param pro: probability pooling function. If "raw", then a raw result
+            from convolution is applied, if "sigmoid" then a sigmoid of
             result from convolution is applied.
         '''
         self.inp_layers = inp_layers
@@ -570,7 +570,7 @@ class Convolutional(RBM):
         result = objarray(result, maxdim=1)
         result = result.reshape(active.shape[0], active.shape[1])
         return result
-        
+
     def hidden_raw(self, visible):
         '''Given visible data, return the expected pooling unit values.'''
         #hid_bias = self.hid_bias.reshape(1, self.num_filters)
@@ -589,7 +589,7 @@ class Convolutional(RBM):
 
     def pooled_softmax(self, visible):
         active = exp(self.hidden_raw(visible))
-        return 1. - 1./(1. + self._pool_sum(active, scaled=True)) 
+        return 1. - 1./(1. + self._pool_sum(active, scaled=True))
 
     def visible_expectation(self, hidden):
         '''Given hidden states, return the expected visible unit values.'''
@@ -610,7 +610,7 @@ class Convolutional(RBM):
         elif len(v.shape)==4:
             tv = numpy.transpose(v, (1, 0, 2, 3))
         w = conv4d(tv, ih, processes=self.processes).mean(axis=1)
-        w = numpy.asarray(list(w.ravel())).reshape(self.inp_layers, 
+        w = numpy.asarray(list(w.ravel())).reshape(self.inp_layers,
                                                    self.num_filters,
                                                    *self.filter_shape)
         return w
@@ -621,7 +621,7 @@ class Convolutional(RBM):
         else:
             return h.mean(axis=-1).mean(axis=-1).mean(axis=0)
 
-    def calculate_gradients(self, visible, idx=None):
+    def calculate_gradients(self, visible):
         '''Calculate gradients for an instance of visible data.
 
         Returns a 3-tuple of gradients: weights, visible bias, hidden bias.
@@ -631,12 +631,8 @@ class Convolutional(RBM):
         v0 = visible
         h0 = self.hidden_prob(v0)
 
-        assert idx is not None
-        assert self.V_ is not None, "You haven't initialised the model yet"
-        h_ = self.hidden_prob(self.V_[idx])
-        v1 = self.visible_expectation(bernoulli(h_))
+        v1 = self.visible_expectation(bernoulli(h0))
         h1 = self.hidden_prob(v1)
-        self.V_[idx] = v1
 
         gw = (self.vh2w(v0, h0) - self.vh2w(v1, h1))
         gv = mean(v0 - v1).mean()
@@ -650,7 +646,7 @@ class Convolutional(RBM):
 
         def __init__(self, rbm, momentum, target_sparsity=None):
             '''
-                
+
             '''
             self.rbm = rbm
             self.momentum = momentum
@@ -661,18 +657,18 @@ class Convolutional(RBM):
             self.grad_hid = numpy.zeros(rbm.hid_bias.shape, float)
 
             self.V_ = None
-            
+
         def init(self, V, iterations=100):
             """ Initialise ``iterations`` Markov Chains v_ to all zero states.
                 Used only when ``peristant`` is True.
-                
+
             """
             V_ = V
             for i in xrange(iterations):
                 H = self.hidden_prob(V_)
                 V_ = self.visible_expectation(bernoulli(H))
             self.V_ = V_
-                
+
         def batch_learn(self, visible, batchsize=100, epochs=100, lr=.01, verbose=True, print_after=10):
             if verbose:
                 print 'Pre-training the model...'
@@ -680,12 +676,11 @@ class Convolutional(RBM):
             cost = []
             for epoch in xrange(epochs):
                 c = []
-                # Shuffle X for stochastic gradient descent
                 idx = permutation(X.shape[0])
-                X_ = X[idx]        
+                X_ = X[idx]
                 for batch_index in xrange(n_batches):
                     sl = slice(batch_index*batch_size, (batch_index + 1)*batch_size)
-                    cost = trainer.learn(X_[sl], lr=lr, idx=idx[sl])     
+                    cost = trainer.learn(X_[sl], lr=lr)
                     c.append(cost)
                     if verbose and batch_index % print_after==0:
                         print "Epoch %d, Batch %d, costs: %.5f" % (epoch, batch_index, np.average(c))
@@ -694,11 +689,11 @@ class Convolutional(RBM):
                 cost.append(numpy.average(c))
             return numpy.asarray(cost)
 
-        def learn(self, visible, lr=0.1, l2_reg=0, idx=None):
-            w, v, h = self.rbm.calculate_gradients(visible, idx)
+        def learn(self, visible, lr=0.1, l2_reg=0):
+            w, v, h = self.rbm.calculate_gradients(visible)
             if self.target_sparsity is not None:
                 # h -= self.target_sparsity*self.rbm.hidden_mean(self.rbm.hidden_prob(visible))
-                h -= (self.rbm.hidden_mean(self.rbm.hidden_prob(visible)) - self.target_sparsity)
+                h -= self.rbm.hidden_mean(self.rbm.hidden_prob(visible)) - self.target_sparsity
 
             kwargs = dict(alpha=lr, momentum=self.momentum)
             self.grad_vis = self.rbm.apply_gradient('vis_bias', v, self.grad_vis, **kwargs)
